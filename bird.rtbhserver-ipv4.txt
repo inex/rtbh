@@ -1,0 +1,241 @@
+# Bird RTBH Configuration
+#
+# Barry O'Donovan <barry.odonovan@inex.ie>
+#
+# Based on IOS examples by Nick Hilliard at:
+#     https://www.inex.ie/rtbh/
+#
+#
+# Reads from routing table 66 on a Linux server and will blackhole routes as
+# follows:
+#
+# ip route add blackhole 192.0.2.32/32 table 66 metric 6666
+#    -> should block locally only (edge/core routers will have to do the heavy lifting)
+#
+# ip route add blackhole 192.0.2.32/32 table 66 metric 9999
+#    -> shares with upstream peers (edge routers may have to do some heavy lifting)
+#
+# ip route add blackhole 192.0.2.32/32 table 66 metric 6699
+#    -> shares with local and upstream peers
+#
+# NB: only one route should appear in the local Linux table with an above
+#     metric. 6666 + 9999 != 6699 !!!
+
+log "/var/log/bird-rtbh.log" all;
+log syslog { debug, trace, info, remote, warning, error, auth, fatal, bug };
+
+define ownasn = 64496;
+define loopbackaddress = 192.0.2.99;
+
+router id 192.0.2.99;
+
+
+protocol direct {
+        interface "-*";
+}
+
+protocol kernel {
+        learn;                  # Learn all alien routes from the kernel
+        persist;                # Don't remove routes on bird shutdown
+        scan time 5;            # Scan kernel routing table every 5 secs
+        export all;             # Default is export none
+}
+
+protocol device {
+        scan time 10;           # Scan interfaces every 10 seconds
+}
+
+# Static routes.  We need to use this as a pseudo mechanism for handling the
+# device connected routes.
+protocol static {
+    route 192.0.2.99/32 via "lo";
+    route 192.0.2.1/32 blackhole;
+
+    # if you want to advertise a recursive default route over OSPF, use this:
+    # route 0.0.0.0/0 recursive 192.0.2.160;
+}
+
+# Only export our own loopback into OSPF. We're not acting as a router here.
+filter ospf_export {
+    if source != RTS_STATIC_DEVICE then reject;
+
+    if net ~ [ 192.0.2.99/32 ] then {
+        accept;
+    }
+
+    reject;
+}
+
+protocol ospf ospf_rtbh01 {
+    rfc1583compat yes;
+
+    # If we're using a recursive default route as per the statics above,
+    # learn all except a default route
+    import where !( net = 0.0.0.0/0 );
+
+    export filter ospf_export;
+
+    # we never transit traffic:
+    stub router yes;
+
+    # In this example, eth1 and eth2 are each connected to an edge router.
+    # We configure eth1 and eth2 as /31 networks. OSPF takes these as ptp links
+    # and Bird consequently ignores them for OSPF. As such, we force them to
+    # type broadcast below
+    area 0.0.0.0 {
+        interface "eth1" {
+            type broadcast;
+            hello 1;
+            dead count 4;
+        };
+
+        interface "eth2" {
+	        type broadcast;
+            hello 1;
+            dead count 4;
+        };
+    };
+}
+
+
+# This function ensures the IP address to be black holed
+# is a /32 and from a valid prefix set
+function check_host_address()
+prefix set valid_prefixes;
+{
+    valid_prefixes = [
+        # insert your prefixes here. e.g.
+        # 192.0.2.0/24+
+    ];
+
+    if !(net ~ valid_prefixes) then
+        return false;
+
+    if net.len != 32 then
+        return false;
+
+    return true;
+}
+
+filter f_from_kernel_rtbh
+{
+    if !(dest = RTD_BLACKHOLE) then
+        reject;
+
+    if !(check_host_address()) then
+        reject;
+
+    bgp_community = -empty-;
+
+    # note that because of the way Bird processes routes and because the
+    # Linux kernel will allow two routes to the same prefix with different
+    # metrics, we need to ensure only one route for a prefix is entered
+    # into the table at any given time.
+
+    if krt_metric = 6699 then {
+        bgp_community.add((ownasn,6666));
+        bgp_community.add((ownasn,9999));
+    } else if krt_metric = 6666 then {
+        bgp_community.add((ownasn,6666));
+    } else if krt_metric = 9999 then {
+        bgp_community.add((ownasn,9999));
+    }
+
+    accept;
+}
+
+
+# table where we'll put routes to be black holed
+table t_rtbh_all_routes;
+
+protocol kernel pk_rtbh_local {
+    table t_rtbh_all_routes;
+    kernel table 66;
+    export none;
+    import filter f_from_kernel_rtbh;
+    scan time 5;
+    learn yes;
+}
+
+# filter for sharing routes with local PE routers
+filter f_to_bgp_local
+{
+    if !(check_host_address()) then
+        reject;
+
+    if ( (ownasn,6666) ~ bgp_community || (ownasn,9999) ~ bgp_community ) then {
+        bgp_local_pref = 5000;
+#        bgp_origin = ORIGIN_IGP;
+        bgp_next_hop = 192.0.2.1;
+        accept;
+    }
+
+    reject;
+}
+
+# filter for sharing routes with upstream transit peers
+filter f_to_bgp_upstream
+{
+    if !(check_host_address()) then
+        reject;
+
+    if ( (ownasn,9999) ~ bgp_community ) then {
+        # just send the 9999 community
+        bgp_community = -empty-;
+        bgp_community.add((ownasn,9999));
+        bgp_local_pref = 5000;
+#        bgp_origin = ORIGIN_IGP;
+        bgp_next_hop = 192.0.2.1;
+        accept;
+    }
+
+    reject;
+}
+
+
+##
+## RTBH base peer template configuration
+##
+template bgp tb_peer_base {
+    local as ownasn;
+    source address loopbackaddress;
+    import none;
+}
+
+##
+## RTBH local PE router peer template configuration
+##
+template bgp tb_peer_local from tb_peer_base {
+    export filter f_to_bgp_local;
+}
+
+##
+## RTBH upstream router peer template configuration
+##
+template bgp tb_peer_upstream from tb_peer_base {
+    export filter f_to_bgp_upstream;
+}
+
+
+
+##
+## PEERS:
+##
+
+#protocol bgp pb_rtr01 from tb_peer_local {
+#    neighbor 192.0.2.248 as ownasn;
+#    table t_rtbh_all_routes;
+#}
+
+#protocol bgp pb_rtr02 from tb_peer_local {
+#    neighbor 192.0.2.250 as ownasn;
+#    table t_rtbh_all_routes;
+#}
+
+#protocol bgp pb_transit_provider_a from tb_peer_upstream {
+#    neighbor 192.0.2.20 as 64497;
+#    source address loopbackaddress;
+#    password "qwerty";
+#    table t_rtbh_all_routes;
+#    multihop 15;
+#}
