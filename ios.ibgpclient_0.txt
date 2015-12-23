@@ -1,0 +1,20 @@
+! Configure router not to send ICMP unreachable packets for discarded
+! packets
+interface Null0
+ no ip unreachables
+ no ipv6 unreachables
+
+! Wire down the discard prefixes to the discard interface
+ip route 192.0.2.1 255.255.255.255 Null0
+ipv6 route 100::1/128 Null0
+
+! Loose URPF on interfaces which have BGP configured on them
+interface GigabitEthernet1/1
+ ip verify unicast source reachable-via any
+ ipv6 verify unicast source reachable-via any
+
+! Strict URPF on interfaces which do not have BGP configured on them (e.g.
+! customers with static routes, etc)
+interface GigabitEthernet1/1 
+ ip verify unicast source reachable-via rx
+ ipv6 verify unicast source reachable-via rx

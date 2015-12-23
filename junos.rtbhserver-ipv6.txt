@@ -1,0 +1,56 @@
+set routing-options rib inet6.0 static route 100::1/128 discard install
+
+set policy-options community cl-rtbh-permit-export-to-local members 65000:6666
+set policy-options community cl-rtbh-permit-export-to-upstreams members 65000:9999
+set policy-options community no-export members no-export
+
+set policy-options policy-statement ps-bgp-deny-all from protocol bgp
+set policy-options policy-statement ps-bgp-deny-all then reject
+
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams from protocol static
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams from tag 9999
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams from route-filter ::/0 upto /127 reject
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams then local-preference 5000
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams then origin igp
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams then community + cl-rtbh-permit-export-to-local
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams then community + cl-rtbh-permit-export-to-upstreams
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams then next-hop 100::1
+set policy-options policy-statement ps-ipv6-rtbh-upstreams term match-rtbh-upstreams then accept
+
+set policy-options policy-statement ps-ipv6-rtbh-injector term accept-only-host-routes from route-filter ::/0 upto /127 reject
+set policy-options policy-statement ps-ipv6-rtbh-injector term set-common-options then local-preference 5000
+set policy-options policy-statement ps-ipv6-rtbh-injector term set-common-options then origin igp
+set policy-options policy-statement ps-ipv6-rtbh-injector term set-common-options then community + cl-rtbh-permit-export-to-local
+set policy-options policy-statement ps-ipv6-rtbh-injector term set-common-options then next-hop 100::1
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-6666 from protocol static
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-6666 from tag 6666
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-6666 then community + no-export
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-6666 then accept
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-9999 from protocol static
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-9999 from tag 9999
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-9999 then community + cl-rtbh-permit-export-to-upstreams
+set policy-options policy-statement ps-ipv6-rtbh-injector term match-tag-9999 then accept
+
+set protocols bgp group bg-rtbh-ipv6-rr type internal
+set protocols bgp group bg-rtbh-ipv6-rr description "RTBH session to route reflectors"
+set protocols bgp group bg-rtbh-ipv6-rr local-address 2001:db8:255::1
+set protocols bgp group bg-rtbh-ipv6-rr hold-time 20
+set protocols bgp group bg-rtbh-ipv6-rr advertise-inactive
+set protocols bgp group bg-rtbh-ipv6-rr import ps-bgp-deny-all
+set protocols bgp group bg-rtbh-ipv6-rr export ps-ipv6-rtbh-injector
+set protocols bgp group bg-rtbh-ipv6-rr peer-as 65000
+set protocols bgp group bg-rtbh-ipv6-rr local-as 65000
+set protocols bgp group bg-rtbh-ipv6-rr neighbor 2001:db8:1::1 description RR #1
+set protocols bgp group bg-rtbh-ipv6-upstreams type external
+set protocols bgp group bg-rtbh-ipv6-upstreams description "RTBH session to Transit Providers"
+set protocols bgp group bg-rtbh-ipv6-upstreams multihop ttl 10
+set protocols bgp group bg-rtbh-ipv6-upstreams local-address 2001:db8:255::1
+set protocols bgp group bg-rtbh-ipv6-upstreams hold-time 20
+set protocols bgp group bg-rtbh-ipv6-upstreams advertise-inactive
+set protocols bgp group bg-rtbh-ipv6-upstreams import ps-bgp-deny-all
+set protocols bgp group bg-rtbh-ipv6-upstreams export ps-ipv6-rtbh-upstreams
+set protocols bgp group bg-rtbh-ipv6-upstreams local-as 65000
+set protocols bgp group bg-rtbh-ipv6-upstreams neighbor 2001:db8:999::1 description "Transit Provider #1"
+set protocols bgp group bg-rtbh-ipv6-upstreams neighbor 2001:db8:999::1 peer-as 23456
+
+set routing-options rib inet6.0 static route 2001:db8:ffff::1/128 next-hop 100::1 install tag 6666

@@ -1,0 +1,115 @@
+! #####################################
+! IPv6 Configuration Preamble
+! #####################################   
+
+ipv6 prefix-list pl-ipv6-deny-all seq 5 deny ::/0
+ipv6 prefix-list pl-ipv6-allow-host seq 5 permit ::/0 ge 128
+
+ip community-list standard cl-rtbh-permit-export-to-local permit 65000:6666
+ip community-list standard cl-rtbh-permit-export-to-upstreams permit 65000:9999
+
+
+! #####################################
+! RTBH injection
+! #####################################
+
+route-map rm-ipv6-rtbh-injector permit 10
+ match tag 6666
+ match ipv6 address prefix-list pl-ipv6-allow-host
+ set local-preference 5000
+ set origin igp
+ set community 65000:6666 no-export
+ set ipv6 next-hop 100::1
+
+route-map rm-ipv6-rtbh-injector permit 20
+ match tag 9999
+ match ipv6 address prefix-list pl-ipv6-allow-host
+ set local-preference 5000
+ set origin igp
+ set community 65000:9999 65000:6666
+ set ipv6 next-hop 100::1
+
+router bgp 65000
+ address-family ipv6
+  redistribute static route-map rm-ipv6-rtbh-injector
+
+! #####################################
+! RTBH local distribution
+! #####################################
+
+route-map rm-rtbh-ipv6-local-out permit 10 
+ match community cl-rtbh-permit-export-to-local cl-rtbh-permit-export-to-upstreams
+
+router bgp 65000
+ neighbor pg-rtbh-ipv6-rr peer-group
+ neighbor pg-rtbh-ipv6-rr update-source Loopback 0
+ neighbor pg-rtbh-ipv6-rr description RTBH link to route reflectors
+ address-family ipv6
+  neighbor pg-rtbh-ipv6-rr prefix-list pl-ipv6-deny-all in
+  neighbor pg-rtbh-ipv6-rr route-map rm-rtbh-ipv6-local-out out
+
+ neighbor 2001:db8:1::1 remote-as 65000
+ neighbor 2001:db8:1::1 peer-group pg-rtbh-ipv6-rr
+ address-family ipv6
+  neighbor 2001:db8:1::1 activate
+
+
+! #####################################
+! RTBH upstream distribution
+! #####################################
+
+route-map rm-rtbh-ipv6-upstreams-out permit 10 
+ match community cl-rtbh-permit-export-to-upstreams
+ match ipv6 address prefix-list pl-ipv6-allow-host
+
+router bgp 65000
+ neighbor pg-rtbh-ipv6-upstreams peer-group
+ neighbor pg-rtbh-ipv6-upstreams update-source Loopback 0
+ neighbor pg-rtbh-ipv6-upstreams ebgp-multihop 10
+ neighbor pg-rtbh-ipv6-upstreams description RTBH link to upstream providers 
+ address-family ipv6
+  neighbor pg-rtbh-ipv6-upstreams prefix-list pl-ipv6-deny-all in
+  neighbor pg-rtbh-ipv6-upstreams route-map rm-rtbh-ipv6-upstreams-out out
+
+ neighbor 2001:db8:999::1 remote-as 23456
+ neighbor 2001:db8:999::1 description Transit Provider
+ neighbor 2001:db8:999::1 peer-group pg-rtbh-ipv6-upstreams
+ address-family ipv6
+  neighbor 2001:db8:999::1 activate
+
+! #####################################
+! RTBH customer link
+! #####################################
+
+ipv6 prefix-list pl-ipv6-address-block-customer1 seq 5 permit 2001:db8:beef::/48 le 128
+
+route-map rm-rtbh-ipv6-downstreams-customer1-in permit 10 
+ match ipv6 address prefix-list pl-ipv6-address-block-customer1
+ continue 100
+
+route-map rm-rtbh-ipv6-downstreams-customer1-in deny 11
+
+route-map rm-rtbh-ipv6-downstreams-customer1-in permit 100
+ match community cl-rtbh-permit-export-to-local cl-rtbh-permit-export-to-upstreams
+ match ipv6 address prefix-list pl-ipv6-allow-host
+ set local-preference 5000
+ set origin igp
+ set ipv6 next-hop 100::1
+
+router bgp 65000
+ neighbor 2001:db8:db9::1 remote-as 64500
+ neighbor 2001:db8:db9::1 description Customer #1
+ address-family ipv6
+  neighbor 2001:db8:db9::1 activate
+  neighbor 2001:db8:db9::1 prefix-list pl-ipv6-deny-all out
+  neighbor 2001:db8:db9::1 route-map rm-rtbh-ipv6-downstreams-customer1-in in
+
+! #####################################
+! RTBH Triggers
+! #####################################
+
+! blackhole this address space to upstreams and locally
+ipv6 route 3ffe::1/128 Null0 tag 9999
+
+! blackhole this address space locally only
+ipv6 route 2001:db8:ffff::1/128 Null0 tag 6666

@@ -1,0 +1,55 @@
+set routing-options static route 192.0.2.1/32 discard install
+
+set policy-options community cl-rtbh-permit-export-to-local members 65000:6666
+set policy-options community cl-rtbh-permit-export-to-upstreams members 65000:9999
+set policy-options community no-export members no-export
+
+set policy-options policy-statement ps-bgp-deny-all from protocol bgp
+set policy-options policy-statement ps-bgp-deny-all then reject
+
+set policy-options policy-statement ps-ipv4-rtbh-injector term accept-only-host-routes from route-filter 0.0.0.0/0 upto /31 reject
+set policy-options policy-statement ps-ipv4-rtbh-injector term set-common-options then local-preference 5000
+set policy-options policy-statement ps-ipv4-rtbh-injector term set-common-options then origin igp
+set policy-options policy-statement ps-ipv4-rtbh-injector term set-common-options then community + cl-rtbh-permit-export-to-local
+set policy-options policy-statement ps-ipv4-rtbh-injector term set-common-options then next-hop 192.0.2.1
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-6666 from protocol static
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-6666 from tag 6666
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-6666 then community + no-export
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-6666 then accept
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-9999 from protocol static
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-9999 from tag 9999
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-9999 then community + cl-rtbh-permit-export-to-upstreams
+set policy-options policy-statement ps-ipv4-rtbh-injector term match-tag-9999 then accept
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams from protocol static
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams from tag 9999
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams from route-filter 0.0.0.0/0 upto /31 reject
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams then local-preference 5000
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams then origin igp
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams then community + cl-rtbh-permit-export-to-local
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams then community + cl-rtbh-permit-export-to-upstreams
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams then next-hop 192.0.2.1
+set policy-options policy-statement ps-ipv4-rtbh-upstreams term match-rtbh-upstreams then accept
+
+set protocols bgp group bg-rtbh-ipv4-rr type internal
+set protocols bgp group bg-rtbh-ipv4-rr description "RTBH session to route reflectors"
+set protocols bgp group bg-rtbh-ipv4-rr local-address 192.168.255.1
+set protocols bgp group bg-rtbh-ipv4-rr hold-time 20
+set protocols bgp group bg-rtbh-ipv4-rr advertise-inactive
+set protocols bgp group bg-rtbh-ipv4-rr import ps-bgp-deny-all
+set protocols bgp group bg-rtbh-ipv4-rr export ps-ipv4-rtbh-injector
+set protocols bgp group bg-rtbh-ipv4-rr peer-as 65000
+set protocols bgp group bg-rtbh-ipv4-rr local-as 65000
+set protocols bgp group bg-rtbh-ipv4-rr neighbor 192.168.1.1 description RR #1
+set protocols bgp group bg-rtbh-ipv4-upstreams type external
+set protocols bgp group bg-rtbh-ipv4-upstreams description "RTBH session to Transit Providers"
+set protocols bgp group bg-rtbh-ipv4-upstreams multihop ttl 10
+set protocols bgp group bg-rtbh-ipv4-upstreams local-address 192.168.255.1
+set protocols bgp group bg-rtbh-ipv4-upstreams hold-time 20
+set protocols bgp group bg-rtbh-ipv4-upstreams advertise-inactive
+set protocols bgp group bg-rtbh-ipv4-upstreams import ps-bgp-deny-all
+set protocols bgp group bg-rtbh-ipv4-upstreams export ps-ipv4-rtbh-upstreams
+set protocols bgp group bg-rtbh-ipv4-upstreams local-as 65000
+set protocols bgp group bg-rtbh-ipv4-upstreams neighbor 172.16.1.1 description "Transit Provider #1"
+set protocols bgp group bg-rtbh-ipv4-upstreams neighbor 172.16.1.1 peer-as 23456
+
+set routing-options static route 10.10.10.10/32 next-hop 192.0.2.1 discard tag 6666

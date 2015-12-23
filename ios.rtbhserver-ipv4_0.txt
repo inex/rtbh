@@ -1,0 +1,191 @@
+! INEX Sample RTBH Injector Configuration
+! =======================================
+!
+! This configuration sample provides an RTBH config for a dedicated RTBH
+! injection system using the following parameters
+!
+! Local ASN:				65000
+! Local Route Reflector cluster:	192.168.1.1 / 192.168.1.2
+!
+! Transit Provider RTBH server ASN:	23456
+! Transit Provider RTBH server Address:	172.16.1.1
+!
+! Customer RTBH server ASN:		64500
+! Transit Provider RTBH server Address:	10.254.1.1
+!
+! All prefixes injected into the local iBGP mesh are tagged with either the
+! 65000:6666 or 65000:9999 BGP communities.  This allows easy identification
+! of RTBH prefixes on the live network.
+!
+! 
+
+
+! #####################################
+! IPv4 Preamble
+! #####################################   
+
+! pl-ipv4-deny-all denies everything
+ip prefix-list pl-ipv4-deny-all seq 5 deny 0.0.0.0/0
+
+! pl-ipv4-allow-host allows /32 routes only.
+ip prefix-list pl-ipv4-allow-host seq 5 permit 0.0.0.0/0 ge 32
+
+! We define two BGP communities here to allow us to control how RTBH
+! prefixes are exported.
+!
+! community xxxx:6666 is used to redistribute RTBH prefixes to the local
+! network only.  I.e. intra-asn distribution.
+!   
+! community xxxx:9999 is used to allow redistribution of RTBH prefixes to
+! upstream networks
+
+ip community-list standard cl-rtbh-permit-export-to-local permit 65000:6666
+ip community-list standard cl-rtbh-permit-export-to-upstreams permit 65000:9999
+
+! #####################################
+! RTBH injection
+! #####################################
+!
+! The policy for handling RTBH prefixes is as follows:
+!
+!	- high local preference to ensure that these prefixes take
+!	  precedence over other announcements.
+!
+!	- origin=igp is part of the BGP best path tie-breaking mechanism.
+!	  probably it won't be used, but it's no harm to configure it anyway
+!
+!	- only allow injection of host routes (i.e. /32).  this will limit
+!	  the amount of damage if there is a misconfiguration.
+!
+!	- BGP next-hop is wired to the discard prefix which is defined on
+!	  all of the network's PE routers
+!
+!	- BGP community tags are used to differentiate between locally
+!	  distributed rtbh prefixes and prefixes that you want to distribute
+!	  to upstream networks
+!
+! It would be nice to configure all of the BGP policy stuff in single
+! route-map statement and then use the "continue" command to handle the tag
+! matching stuff.  Unfortunately, as this route-map is used to redistribute
+! between static routes and the BGP process, you cannot use "continue". 
+! This is due to a peculiar limitation in IOS which only allows "continue"
+! in BGP-only route-maps.
+
+route-map rm-ipv4-rtbh-injector permit 10
+ match tag 6666
+ match ip address prefix-list pl-ipv4-allow-host
+ set local-preference 5000
+ set origin igp
+ set community 65000:6666 no-export
+ set ip next-hop 192.0.2.1
+
+route-map rm-ipv4-rtbh-injector permit 20
+ match tag 9999
+ match ip address prefix-list pl-ipv4-allow-host
+ set local-preference 5000
+ set origin igp
+ set community 65000:9999 65000:6666
+ set ip next-hop 192.0.2.1
+
+! This redistribute command injects the static RTBH routes (see the end of
+! this configuration sample) into the BGP RIB.
+
+router bgp 65000
+ address-family ipv4
+  redistribute static route-map rm-ipv4-rtbh-injector
+
+! we use rm-rtbh-ipv4-local-out to announce only RTBH prefixes to the local
+! network.  i.e. it will distribute prefixes with community 65000:6666 or
+! 65000:9999.  Everything else will be denied by default.
+
+route-map rm-rtbh-ipv4-local-out permit 10 
+ match community cl-rtbh-permit-export-to-local cl-rtbh-permit-export-to-upstreams
+
+! it is best to create a peer group for this for both CPU and space
+! efficiency reasons.  Note that the update source is set to be the lookback
+! address on the system, which means this RTBH server needs to be integrated
+! into your local IGP configuration (usually OSPF or IS-IS). 
+! 
+! the injection policy allows RTBH prefixes out, and drops all inbound
+! updates.
+
+router bgp 65000
+ neighbor pg-rtbh-ipv4-rr peer-group
+ neighbor pg-rtbh-ipv4-rr update-source Loopback 0
+ neighbor pg-rtbh-ipv4-rr description RTBH link to route reflectors
+ address-family ipv4
+  neighbor pg-rtbh-ipv4-rr prefix-list pl-ipv4-deny-all in
+  neighbor pg-rtbh-ipv4-rr route-map rm-rtbh-ipv4-local-out out
+
+ neighbor 192.168.1.1 remote-as 65000
+ neighbor 192.168.1.1 peer-group pg-rtbh-ipv4-rr
+ address-family ipv4
+  neighbor 192.168.1.1 activate
+
+ neighbor 192.168.1.2 remote-as 65000
+ neighbor 192.168.1.2 peer-group pg-rtbh-ipv4-rr
+ address-family ipv4
+  neighbor 192.168.1.2 activate
+
+
+! #####################################
+! RTBH upstream distribution
+! #####################################
+
+route-map rm-rtbh-ipv4-upstreams-out permit 10 
+ match community cl-rtbh-permit-export-to-upstreams
+ match ip address prefix-list pl-ipv4-allow-host
+
+router bgp 65000
+ neighbor pg-rtbh-ipv4-upstreams peer-group
+ neighbor pg-rtbh-ipv4-upstreams update-source Loopback 0
+ neighbor pg-rtbh-ipv4-upstreams ebgp-multihop 10
+ neighbor pg-rtbh-ipv4-upstreams description RTBH link to upstream providers 
+ address-family ipv4
+  neighbor pg-rtbh-ipv4-upstreams prefix-list pl-ipv4-deny-all in
+  neighbor pg-rtbh-ipv4-upstreams route-map rm-rtbh-ipv4-upstreams-out out
+
+ neighbor 172.16.1.1 remote-as 23456
+ neighbor 172.16.1.1 description Transit Provider
+ neighbor 172.16.1.1 peer-group pg-rtbh-ipv4-upstreams
+ neighbor 172.16.1.1 ebgp-multihop 5
+ address-family ipv4
+  neighbor 172.16.1.1 activate
+
+! #####################################
+! RTBH customer link
+! #####################################
+
+ip prefix-list pl-ipv4-address-block-customer1 seq 5 permit 10.0.0.0/24 le 32
+
+route-map rm-rtbh-ipv4-downstreams-customer1-in permit 10 
+ match ip address prefix-list pl-ipv4-address-block-customer1
+ continue 100
+
+route-map rm-rtbh-ipv4-downstreams-customer1-in deny 11
+
+route-map rm-rtbh-ipv4-downstreams-customer1-in permit 100
+ match community cl-rtbh-permit-export-to-local cl-rtbh-permit-export-to-upstreams
+ match ip address prefix-list pl-ipv4-allow-host
+ set local-preference 5000
+ set origin igp
+ set ip next-hop 192.0.2.1
+
+router bgp 65000
+ neighbor 10.254.1.1 remote-as 64500
+ neighbor 10.254.1.1 description Customer #1
+ neighbor 10.254.1.1 ebgp-multihop 5
+ address-family ipv4
+  neighbor 10.254.1.1 activate
+  neighbor 10.254.1.1 prefix-list pl-ipv4-deny-all out
+  neighbor 10.254.1.1 route-map rm-rtbh-ipv4-downstreams-customer1-in in
+
+! #####################################
+! RTBH Triggers
+! #####################################
+
+! blackhole this address space to upstreams and locally
+ip route 10.10.10.10 255.255.255.255 Null0 tag 9999
+
+! blackhole this address space locally only
+ip route 10.11.11.11 255.255.255.255 Null0 tag 6666

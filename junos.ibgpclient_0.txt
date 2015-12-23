@@ -1,0 +1,18 @@
+# Wire down the discard prefixes
+set routing-options rib inet6.0 static route 100::1/128 discard install
+set routing-options static route 192.0.2.1/32 discard install
+
+# Create firewall counters for uRPF drops
+set firewall filter rtbh-urpf-ipv4-customer term urpf-ipv4-counter-customer then count urpf-ipv4-customer accept
+set firewall family inet6 filter rtbh-urpf-ipv6-customer term urpf-ipv6-counter-customer then count urpf-ipv6-customer accept
+
+# This configures strict mode URPF on the specified interface
+set interfaces ge-0/0/0 unit 0 family inet rpf-check fail-filter rtbh-urpf-ipv4-customer
+set interfaces ge-0/0/0 unit 0 family inet6 rpf-check fail-filter rtbh-urpf-ipv6-customer
+
+# If you're running JUNOS 12.1 on MX and T hardware, you can use loose mode
+# with URPF discard.
+set interfaces ge-0/0/0 unit 0 family inet rpf-check mode loose fail-filter rtbh-urpf-ipv4-customer
+set interfaces ge-0/0/0 unit 0 family inet6 rpf-check mode loose fail-filter rtbh-urpf-ipv6-customer
+set forwarding-options rpf-loose-mode-discard family inet     
+set forwarding-options rpf-loose-mode-discard family inet6
